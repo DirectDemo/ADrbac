@@ -4,6 +4,15 @@
 <#
 .SYNOPSIS
 Crée une structure basique d'OU de groupes pour une nouvelle organisation.
+.NOTES
+    Author         : Patrick MADROLLE
+    Prerequisite   : PowerShell V3 over 2012r2 and upper.
+    Copyright      : GPLv3
+.LINK
+    https://github.com/DirectDemo/ADrbac
+.EXAMPLE
+    .\creaOrg.ps1
+    Crée la premiére organisation, et chaque lancement supplémentaire en crée une de plus.
 #>
 ""
 Set-strictmode -Version 2
