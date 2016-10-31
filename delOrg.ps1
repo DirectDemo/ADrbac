@@ -1,1 +1,0 @@
-﻿remove-ADOrganizationalUnit -Identity ('OU=Global,'+(Get-ADDomain).DistinguishedName) -Recursive -Confirm:$false
