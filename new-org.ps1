@@ -3,7 +3,9 @@
  
 <#
 .SYNOPSIS
-Crée une structure basique d'OU et de groupes pour une nouvelle organisation AD.
+    Create a basic Active Directory set of object according to the RBAC model.
+.DESCRIPTION
+    Create a basic Active Directory set of object, OU, GPO, users, groups and computers, according to the RBAC model.
 .NOTES
     Author         : Patrick MADROLLE
     Prerequisite   : PowerShell V3 over 2012r2 and upper.
@@ -11,120 +13,193 @@ Crée une structure basique d'OU et de groupes pour une nouvelle organisation AD
 .LINK
     https://github.com/DirectDemo/ADrbac
 .EXAMPLE
-    .\creaOrg.ps1
-    Crée la premiére organisation, et chaque lancement supplémentaire en crée une de plus.
+    .\new-org.ps1
 #>
 
-Set-strictmode -Version 3
+################################################################################
+# Declarations
+################################################################################
 
-#--------------------------------------Paramétres
+# Ensure that this script uses the strictest available version.
+Set-StrictMode -Version 3
+
+# Exit this script when an error occurred.
+$ErrorActionPreference = 'Stop'
+
+################################################################################
+# Parameters
+################################################################################
+
 [string]$root = 'Org'    #OU racine UNIQUE
-[bool]$ProtectedFromAccidentalDeletion = $false
-[int]$counterSize = 2
+[bool]$Protected = $false
+[int]$counterSize = 3
 [int]$counter = 0
 
 $OUlist = @(
-"$root.PM0",
-"$root.PM1",
-'PM0.APP0',
-'PM0.APP1',
-'PM0.EQU0',
-'PM0.EQU1',
-'PM0.EQU2',
-'PM0.EQU2',
-'PM1.APP0',
-'PM1.EQU0'
+"$root.MP0",
+'MP0.AP0',
+'MP0.AP0',
+'MP0.AP1',
+'MP0.AP1',
+'MP0.TM0',
+'MP0.TM1',
+'MP0.TM2'
 )
 
-$compteAdministrateur = 'cp'
-$compteOrdinaire = 'co'
+################################################################################
+# Functions
+################################################################################
 
-#--------------------------------------Test de présence d'une organisation
+#-------------------------------------- Test of existing objects
+
 $dom = Get-ADDomain
-remove-ADOrganizationalUnit -Identity 'OU=Org,DC=de,DC=fe' -Recursive -Confirm:$false
-get-gpo -All | ? DisplayName -like "Dom*" | Remove-GPO
+
+    if (get-ADOrganizationalUnit -Identity ('OU=Org,'+$dom.DistinguishedName)) {
+    remove-ADOrganizationalUnit -Identity ('OU=Org,'+$dom.DistinguishedName) -Recursive -Confirm:$false -ErrorAction SilentlyContinue
+    get-gpo -All | ? DisplayName -like "Dom*" | Remove-GPO
+    }
 
 $rootObject = Get-ADOrganizationalUnit -Filter {name -eq $root} -SearchBase $dom.DistinguishedName -SearchScope OneLevel
  
+#-------------------------------------- Key creations
 
-#--------------------------------------Création des OUs et GPO
-    if ( $rootObject -eq $null ) {    $Org = New-ADOrganizationalUnit -Name $root -Path $dom.DistinguishedName -Description "OU racine" -ProtectedFromAccidentalDeletion $ProtectedFromAccidentalDeletion -PassThru
-    $RedirCmp = New-ADOrganizationalUnit -Name 'RedirCmp' -Path $Org.DistinguishedName -Description "OU par défaut des ordinateurs" -PassThru
-    $RedirUsr = New-ADOrganizationalUnit -Name 'RedirUsr' -Path $Org.DistinguishedName -Description "OU par défaut des utilisateurs" -PassThru
-    $ADDS = New-ADOrganizationalUnit -Name 'ADDS' -path $Org.DistinguishedName -Description "Objets pour l'AD et GPO" -PassThru
-    New-GPO ('Dom0/'+$root) | New-GPLink -Target $Org -LinkEnabled Yes | Out-Null
-    "Une nouvelle Organisation vient d'être créée !"
+    if ( $rootObject -eq $null ) {
 
         Function countUP () {
         [int]$script:counter = $script:counter+1
         ("0"*($script:counterSize-([string]$script:counter).Length)+[string]$script:counter)
         }
-        
-        Function newOU ($OU) { #Création de l'OU
-        $OUA = $OU.Split('.')
-            if ($OUA[1] -like "PM*") { 
-            [string]$name = $OUA[1]
-            } else {
-            [string]$name = $OUA[1]+(countUP)
-            }
-        $OUP = Get-ADOrganizationalUnit -Filter "Name -eq '$($OUA[0])'"
-        $OUC = New-ADOrganizationalUnit -Path $OUP.DistinguishedName -Name "$name" -Description "OU $name" -PassThru
-        newGA $OUC.name
-        newGPO $OUC.DistinguishedName
+
+        Function newOU ($OUN, $OUP, $OUD) { #Création de l'OU
+        $OU = New-ADOrganizationalUnit -Path $OUP -Name $OUN -Description $OUD -PassThru -ProtectedFromAccidentalDeletion $Protected
+        if ( $OUP -ne "OU=$root,$($dom.DistinguishedName)" ) { newGA $OU.name }
         }
 
-        Function newGA ($OU) { #Création du GA d'administration
-        if ($OU -like "PM*") { $PC = 9 } else { $PC = [regex]::matches("$OU", "\d")[0].Value }
+        Function newGA ($OUN) { #Création du GA d'administration
+        if ($OUN -like "MP*" -or $OUN -like $root) { $PC = 9 } else { $PC = [regex]::matches("$OUN", "\d")[0].Value }
         [string]$serial = "$PC"+(countUP)
-        New-ADGroup -Name ("ga$serial.administration."+$OU) -Path $ADDS.DistinguishedName -Description ("Administration de "+$dom.DNSRoot) -GroupScope Global 
+        New-ADGroup -Name ("ga$serial.$OUN.administration") -Path $ADGgr.DistinguishedName -Description ("Administration de "+$dom.DNSRoot) -GroupScope Global
+        newGPO $OU.DistinguishedName 
         }
 
-        Function newGPO ($OU) { #Création du squelette de la GPO
-        $OUlist = ($OU -replace 'CN=' -replace 'OU=' -replace ($dom).DistinguishedName).trim(',') -split ','
+        Function newGPO ($OUD) { #Création du squelette de la GPO
+        $OUlist = ($OUD -replace 'CN=' -replace 'OU=' -replace ($dom).DistinguishedName).trim(',') -split ','
         $GPOname = ''
             for ($i = 1; $i -le $OUlist.Length ; $i++)
             { 
                 $GPOname = $GPOname+'/'+$OUlist[-$i]
             }
-
-        New-GPO ('Dom0'+$GPOname) | New-GPLink -Target $OU -LinkEnabled Yes | Out-Null
+        $GPOname = ('Dom0'+$GPOname).TrimEnd('/')
+        New-GPO $GPOname | New-GPLink -Target "$OUD" -LinkEnabled Yes -Order 1 | Out-Null
         $GPOname
         }
-        
+
+    "Création d'une nouvelle Organisation."
+
+    newGPO $dom.DistinguishedName
+    newGPO ('OU=Domain Controllers,'+$dom.DistinguishedName)
+
+    $Org = New-ADOrganizationalUnit -Name $root -Path $dom.DistinguishedName -Description "OU racine" -ProtectedFromAccidentalDeletion $Protected -PassThru
+    New-GPO ('Dom0/'+$root) | New-GPLink -Target $Org -LinkEnabled Yes | Out-Null
+
+    $ADGgr = New-ADOrganizationalUnit -Name 'ADGgr' -path $Org.DistinguishedName -Description "OU par défaut des groupes" -ProtectedFromAccidentalDeletion $Protected -PassThru
+    New-GPO ('Dom0/'+$root+'/ADGgr') | New-GPLink -Target $ADGgr -LinkEnabled Yes | Out-Null
+
+    $RedirCmp = New-ADOrganizationalUnit -Name 'RedirCmp' -Path $Org.DistinguishedName -Description "OU par défaut des ordinateurs" -ProtectedFromAccidentalDeletion $Protected -PassThru
+    New-GPO ('Dom0/'+$root+'/RedirCmp') | New-GPLink -Target $RedirCmp -LinkEnabled Yes | Out-Null
+
+    $RedirUsr = New-ADOrganizationalUnit -Name 'RedirUsr' -Path $Org.DistinguishedName -Description "OU par défaut des utilisateurs" -ProtectedFromAccidentalDeletion $Protected -PassThru
+    New-GPO ('Dom0/'+$root+'/RedirUsr') | New-GPLink -Target $RedirUsr -LinkEnabled Yes | Out-Null
+
     foreach ($ouModel in $OUlist) {
-    newOU $ouModel
+    $OUA = $ouModel.Split('.')
+        if ($OUA[1] -like "MP*") { 
+        [string]$name = $OUA[1]
+        } else {
+        [string]$name = $OUA[1]+(countUP)
+        }
+    $OUP = Get-ADOrganizationalUnit -Filter "Name -eq '$($OUA[0])'"
+    newOU $name $OUP.DistinguishedName "OU $name"
     }
  
-  #--------------------------------------Création des deux 1ers utilisateurs
-    
-    $admEQU0 = (Get-ADOrganizationalUnit -LDAPFilter '(name=EQU0*)' | Sort-Object Name)[0]
-    $admEQU2 = (Get-ADOrganizationalUnit -LDAPFilter '(name=EQU2*)' | Sort-Object Name)[0]
+    ""
+    [array]$TM0 = (Get-ADOrganizationalUnit -LDAPFilter '(name=TM0*)' | Sort-Object Name)
+    if ($TM0[0] -ne $null) {
 
-    if ($admEQU0 -ne $null) {
-
-        $adminDom = (Get-ADGroup -LDAPFilter '(name=*EQU0*)' | Sort-Object Name)[0]
-        Get-ADgroup -filter * | Where-object {
-          $_.sid -eq "$($dom.DomainSID)-512" -or $_.sid -eq "$($dom.DomainSID)-519"
-        } | Foreach-Object {
-          Add-ADGroupMember -Identity $_ -Members $adminDom
-        }
+    [array]$adminDomList = Get-ADGroup -LDAPFilter '(name=*TM0*)' | Sort-Object Name
+    $adminDom = $adminDomList[0]
+    Get-ADgroup -filter * | Where-object {
+        $_.sid -eq "$($dom.DomainSID)-512" -or $_.sid -eq "$($dom.DomainSID)-519"
+    } | Foreach-Object {
+        Add-ADGroupMember -Identity $_ -Members $adminDom
+    }
  
-        $pass = Read-Host -Prompt "Saisir une 1ére fois le mot passe par défaut: " -AsSecureString
-        [int]$script:counter = $script:counter+1
-        $compteAdministrateur = $compteAdministrateur+'0'+(countUP)
-        $domAdmUser = New-ADUser -Name $compteAdministrateur -Path $admEQU0.DistinguishedName -AccountPassword $pass -Description ("Compte d'administration du domaine") -PassThru
-        Set-ADUser -Identity $domAdmUser -Enabled $true -AccountNotDelegated $true -UserPrincipalName ($domAdmUser.name+"@"+$dom.DNSRoot)
-        Add-ADGroupMember -Identity $adminDom -Members $domAdmUser
-        "Votre compte administrateur du domaine $compteAdministrateur est créé."
-    
-            if ($admEQU2 -ne $null) {
-            [int]$script:counter = $script:counter+1
-            $compteOrdinaire = $compteOrdinaire+'2'+(countUP)
-            $domAdmOrdUser = New-ADUser -Name $compteOrdinaire -Path $admEQU2.DistinguishedName -AccountPassword $pass -Description ("Compte commun $compteOrdinaire") -PassThru
-            Set-ADUser -Identity $compteOrdinaire -Enabled $true -UserPrincipalName ($domAdmOrdUser.name+"@"+$dom.DNSRoot)
-            "Votre compte ordinaire $compteOrdinaire est créé."
-            }
-        }
+    $pass = Read-Host -Prompt "Type one time the password for accounts created by that script: " -AsSecureString
+
+    [string]$name = 'up0'+(countUP)
+    $domAdmUser = New-ADUser -Name $name -Path $TM0[0].DistinguishedName -AccountPassword $pass -Description ("domain priviledged account") -PassThru
+    Set-ADUser -Identity $domAdmUser -Enabled $true -AccountNotDelegated $true -UserPrincipalName ($domAdmUser.name+"@"+$dom.DNSRoot)
+    Add-ADGroupMember -Identity $adminDom -Members $domAdmUser
+    "Your domain administrator account $name is ceated."
+
+    [string]$name = 'cd0'+(countUP)
+    $domAdmCpt = New-ADComputer -Name $name -SamAccountName $name -Path $TM0[0].DistinguishedName -Description "PAW station"
+    "Your PAW station account $name is created."
+    }
+
+  #-------------------------------------- Optional creations
+
+    [array]$AP0 = (Get-ADOrganizationalUnit -LDAPFilter '(name=AP0*)' | Sort-Object Name)
+    if ($AP0[0] -ne $null) {
+
+    [string]$name = 'cs0'+(countUP)
+    $AP0Cmp0 = New-ADComputer -Name $name -Path $AP0[0].DistinguishedName -Description ("T0 WSUS server") -PassThru
+
+    [string]$serial = '0'+(countUP)
+    New-ADGroup -Name ("ga$serial.$($AP0Cmp0.name).administration") -Path $AP0[0].DistinguishedName -Description "T0 WSUS server administration" -GroupScope Global
+
+    [string]$serial = '0'+(countUP)
+    New-ADGroup -Name ("ga$serial.$($AP0Cmp0.name).monitoring") -Path $AP0[0].DistinguishedName -Description "T0 WSUS server monitoring" -GroupScope Global
+    }
+
+    if ($AP0[1] -ne $null) {
+
+    [string]$name = 'cs0'+(countUP)
+    $AP0Cmp1 = New-ADComputer -Name $name -Path $AP0[1].DistinguishedName -Description ("T0 JUMP server") -PassThru
+
+    [string]$name = 'us0'+(countUP)
+    $AP0Usr1 = New-ADUser -Name $name -Path $AP0[1].DistinguishedName -AccountPassword $pass -Description ("Service account") -PassThru
+    Set-ADUser -Identity $name -Enabled $true -UserPrincipalName ($AP0Usr1.name+"@"+$dom.DNSRoot)
+
+    [string]$serial = '0'+(countUP)
+    New-ADGroup -Name ("ga$serial.$($AP0Cmp1.name).administration") -Path $AP0[1].DistinguishedName -Description "T0 JUMP server administration" -GroupScope Global
+    }
+
+
+    [array]$TM1 = (Get-ADOrganizationalUnit -LDAPFilter '(name=TM1*)' | Sort-Object Name)
+    if ($TM1[0] -ne $null) {
+
+    [string]$name = 'ua1'+(countUP)
+    $domAppUser = New-ADUser -Name $name -Path $TM1[0].DistinguishedName -AccountPassword $pass -Description ("Application account (BAD sécurity practice)") -PassThru
+    Set-ADUser -Identity $name -Enabled $true -UserPrincipalName ($domAppUser.name+"@"+$dom.DNSRoot)
+
+    [string]$serial = '1'+(countUP)
+    New-ADGroup -Name ("gr$serial.DBA_administrators") -Path $TM1[0].DistinguishedName -Description "DBA Administrators" -GroupScope Global
+    }
+
+
+    [array]$TM2 = (Get-ADOrganizationalUnit -LDAPFilter '(name=TM2*)' | Sort-Object Name)
+    if ($TM2[0] -ne $null) {
+    [string]$name = 'ud2'+(countUP)
+    $domOrdUser = New-ADUser -Name $name -Path $TM2[0].DistinguishedName -AccountPassword $pass -Description ("user desktop account") -PassThru
+    Set-ADUser -Identity $name -Enabled $true -UserPrincipalName ($domOrdUser.name+"@"+$dom.DNSRoot)
+
+    [string]$serial = '2'+(countUP)
+    New-ADGroup -Name ("gr$serial.exp_acc") -Path $TM2[0].DistinguishedName -Description "Rôle of experts accountants" -GroupScope Global
+
+    [string]$serial = '2'+(countUP)
+    New-ADGroup -Name ("gr$serial.beg_acc") -Path $TM2[0].DistinguishedName -Description "Rôle of beginners accountants" -GroupScope Global
+    }
 
     ""
     "Commande de déplacement des dossiers par défaut"
@@ -135,6 +210,6 @@ $rootObject = Get-ADOrganizationalUnit -Filter {name -eq $root} -SearchBase $dom
  
   } else {
   #--------------------------------------Information
-    "Une organisation avait déjà été créée."
+    "An organization still exists."
   }
  
